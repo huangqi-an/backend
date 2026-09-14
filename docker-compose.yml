@@ -1,0 +1,39 @@
+# 只起 Redis；app 服务默认注释，启用时取消注释并 docker compose up -d --build app
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: backend-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    environment:
+      # redis-cli 健康检查自动认证，避免命令行 -a 暴露密码
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [backend-net]
+
+  # app（可选，默认不启用）：
+  #   build: { context: ./nodejs }
+  #   container_name: backend-app
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   environment:
+  #     REDIS_HOST: redis        # 容器内连 redis 服务名（不再是 127.0.0.1）
+  #     NODE_ENV: production
+  #   ports: ["${PORT:-3000}:3000"]
+  #   depends_on:
+  #     redis: { condition: service_healthy }
+  #   networks: [backend-net]
+
+volumes:
+  redis-data:
+
+networks:
+  backend-net:

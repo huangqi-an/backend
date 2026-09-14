@@ -5,6 +5,7 @@ import cookieParser from "cookie-parser";
 import { buildSessionMiddleware } from "./middleware/session.ts";
 import { csrfRouter } from "./routes/csrf.routes.ts";
 import { csrfGuard } from "./middleware/csrf.ts";
+import { authRoutes } from "./routes/auth.router.ts";
 
 export async function createApp(): Promise<Express> {
 	const app = express();
@@ -29,11 +30,9 @@ export async function createApp(): Promise<Express> {
 
 	// 对写操作统一拦截
 	app.use(csrfGuard);
+	app.get("/health", (_req, res) => res.json({ ok: true }));
 
-	app.post("/api/login", (req, res) => {
-		req.session.userId = "u1";
-		res.json({ ok: true });
-	});
+	app.use(authRoutes);
 
 	app.post("/api/danger", (req, res) => {
 		res.json({ ok: true, useId: req.session.userId });
