@@ -1,0 +1,53 @@
+### ============================================================
+### Session + Cookie + CSRF Token 接口测试（VS Code REST Client）
+### ============================================================
+###
+### 前置准备：
+###   1. 启动 Redis：
+###      docker compose up -d redis
+###      （或临时：docker run -d --name csrf-redis -p 6379:6379 redis:7-alpine redis-server --requirepass 123456）
+###   2. 启动应用：
+###      cd "nodejs/express/Session + Cookie + CSRF Token" && node index.ts
+###   3. 确认 VS Code 设置 "Rest Client: Cookies Enabled"（默认开启，用于自动管理 sid cookie）
+###   4. 先执行「2. 获取 CSRF Token」一次，后续请求里的
+###      {{getToken.response.body.csrfToken}} 才能解析；cookie 会被自动存储并随后续请求带上
+### ============================================================
+
+@baseUrl = http://localhost:3000
+
+### 1. 健康检查（期望 200，不创建 session）
+GET {{baseUrl}}/health
+
+### 2. 获取 CSRF Token
+# @name getToken
+# 期望 200；响应头 Set-Cookie: sid=...（REST Client 自动存储），body 返回 { "csrfToken": "..." }
+GET {{baseUrl}}/csrf/token
+
+### 3. 写操作 —— 不带 token（期望 403 CSRF token missing）
+POST {{baseUrl}}/api/danger
+
+### 4. 写操作 —— 错误 token（期望 403 CSRF token invalid）
+POST {{baseUrl}}/api/danger
+X-CSRF-Token: bogus
+
+### 5. 写操作 —— 正确 token（期望 200）
+POST {{baseUrl}}/api/danger
+X-CSRF-Token: {{getToken.response.body.csrfToken}}
+
+### 6. 登录（期望 200，session.userId 被写入，触发 Redis 持久化）
+POST {{baseUrl}}/api/login
+X-CSRF-Token: {{getToken.response.body.csrfToken}}
+Content-Type: application/json
+
+{
+  "username": "demo",
+  "password": "123456"
+}
+
+### 7. 登出（期望 200，删除 Redis 当前 session key + Set-Cookie 清除浏览器 sid）
+POST {{baseUrl}}/api/logout
+X-CSRF-Token: {{getToken.response.body.csrfToken}}
+
+### 8. 登出后再次写操作（期望 403 CSRF token missing，session 已销毁）
+POST {{baseUrl}}/api/danger
+X-CSRF-Token: {{getToken.response.body.csrfToken}}
