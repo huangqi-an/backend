@@ -1,10 +1,15 @@
 import { config } from "dotenv";
-import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // 无论从哪个 CWD 启动，都从项目根目录加载 .env
 const __dirname = dirname(fileURLToPath(import.meta.url));
-config({ path: resolve(__dirname, "../../.env") });
+config({
+	path: [
+		resolve(__dirname, "../../.env"),
+		resolve(__dirname, "../../../../../.env"),
+	],
+});
 
 function getEnv(key: string, defaultValue?: string): string {
 	const value = process.env[key];
