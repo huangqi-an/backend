@@ -1,0 +1,52 @@
+### ============================================================
+### Session + Cookie + CSRF Token — Go/Gin 版接口测试
+### ============================================================
+###
+### 前置准备：
+###   1. 启动 Redis：
+###      cd /home/huangqian/project/backend && docker compose up -d redis
+###   2. 启动应用：
+###      cd "go/Session + Cookie + CSRF Token" && go run main.go
+###   3. VS Code REST Client: "Rest Client: Cookies Enabled" 默认开启
+###   4. 先执行「2. 获取 CSRF Token」一次，后续 {{getToken.response.body.csrfToken}} 才能解析
+### ============================================================
+
+@baseUrl = http://localhost:3000
+
+### 1. 健康检查（期望 200，不创建 session）
+GET {{baseUrl}}/health
+
+### 2. 获取 CSRF Token
+# @name getToken
+# 期望 200；响应头 Set-Cookie: sid=...，body 返回 { "csrfToken": "..." }
+GET {{baseUrl}}/csrf/token
+
+### 3. 写操作 —— 不带 token（期望 403 CSRF token missing）
+POST {{baseUrl}}/api/danger
+
+### 4. 写操作 —— 错误 token（期望 403 CSRF token invalid）
+POST {{baseUrl}}/api/danger
+X-CSRF-Token: bogus
+
+### 5. 写操作 —— 正确 token（期望 200）
+POST {{baseUrl}}/api/danger
+X-CSRF-Token: {{getToken.response.body.csrfToken}}
+
+### 6. 登录（期望 200，session.userId 被写入 Redis，返回新 csrfToken）
+# @name loginToken
+POST {{baseUrl}}/api/login
+X-CSRF-Token: {{getToken.response.body.csrfToken}}
+Content-Type: application/json
+
+{
+  "username": "demo",
+  "password": "123456"
+}
+
+### 7. 登出（期望 200，删除 Redis 当前 session key + Set-Cookie 清除浏览器 sid）
+POST {{baseUrl}}/api/logout
+X-CSRF-Token: {{loginToken.response.body.csrfToken}}
+
+### 8. 登出后再次写操作（期望 403 CSRF token missing，session 已销毁）
+POST {{baseUrl}}/api/danger
+X-CSRF-Token: {{getToken.response.body.csrfToken}}
