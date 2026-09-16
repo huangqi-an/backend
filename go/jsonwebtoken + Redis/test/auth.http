@@ -1,0 +1,123 @@
+###############################################################################
+# Go + Gin + JWT + Redis 双 Token 鉴权 —— 手工验收脚本
+#
+# 前置：
+#   1) Redis 已启动：docker compose up -d redis
+#   2) 本目录 .env 已配好（KEY_PREFIX 与 Node 版区分开，避免互相覆盖）
+#   3) 服务已启动：go run .    （监听 http://localhost:3001）
+#
+# 用法：VS Code REST Client / JetBrains HTTP Client 逐条点开执行。
+#   - 带 # @name 的请求，后续可以用 {{名字.response.body.字段}} 引用它的响应。
+#   - refresh token 走 HttpOnly Cookie（名字 rt，Path=/auth），客户端若开启了
+#     cookie jar 会自动带上；第 4 步之前不需要手写 Cookie 头。
+###############################################################################
+
+@host = http://localhost:3001
+
+
+### 0. 健康检查 → 200 {"ok":true}，顺带确认服务连得上 Redis
+GET {{host}}/healthz
+
+
+### 1. 登录 → 200，返回 accessToken，同时种下 refresh cookie（rt）
+# @name login
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{ "username": "admin", "password": "123456" }
+
+
+### 1b. 错误密码 → 401 {"error":"invalid_credentials"}
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{ "username": "admin", "password": "wrong-password" }
+
+
+### 2. 用 accessToken 访问受保护接口 → 200 {"userId":"u_1"}
+GET {{host}}/api/me
+Authorization: Bearer {{login.response.body.accessToken}}
+
+
+### 3. 不带 token → 401 {"error":"missing_token"}
+GET {{host}}/api/me
+
+
+### 3b. 乱造的 token → 401 {"error":"invalid_token"}
+GET {{host}}/api/me
+Authorization: Bearer not.a.real.jwt
+
+
+### 4. 刷新 → 200，返回新的 accessToken，refresh cookie 自动轮换
+#     后续第 6、7 步要用"轮换前后"的两个 rt 做对比，所以这步先记下新 accessToken
+# @name refresh
+POST {{host}}/auth/refresh
+
+
+### 5. 用刷新后的新 accessToken 访问 → 200（旧 access 依然有效，除非它已过期）
+GET {{host}}/api/me
+Authorization: Bearer {{refresh.response.body.accessToken}}
+
+
+### 6. 复用检测：重放第 1 步种下、已被第 4 步轮换掉的旧 rt
+#     预期 401 {"error":"refresh_reuse_detected"}，且整条 family 链被吊销
+#     这里直接把第 1 步响应里的 Set-Cookie 原样当 Cookie 发出去：
+#     Set-Cookie 形如 rt=v1.xxxx; Path=/auth; MaxAge=...; HttpOnly; SameSite=Strict，
+#     服务端只取 rt= 那一对，多出来的属性会被忽略。
+#     若你的客户端不支持 response.headers 插值，改成手写：Cookie: rt=<粘贴旧值>
+POST {{host}}/auth/refresh
+Cookie: {{login.response.headers.Set-Cookie}}
+
+
+### 7. 复用被判定后，第 4 步刚拿到的新 rt 也应该一起失效
+#     预期 401 {"error":"invalid_refresh_token"} —— 整链已被吊销
+#     （如果这里仍然 200，说明复用检测没生效，攻击者就能一直续期）
+POST {{host}}/auth/refresh
+Cookie: {{refresh.response.headers.Set-Cookie}}
+
+
+### 8. 重新登录，开一条全新的 family 链
+# @name login2
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{ "username": "admin", "password": "123456" }
+
+
+### 9. 登出 → 200 {"ok":true}
+#     一次做三件事：清 cookie、删 Redis 里的 refresh 记录、把当前 access 的 jti 拉黑
+POST {{host}}/auth/logout
+Authorization: Bearer {{login2.response.body.accessToken}}
+
+
+### 10. 登出后旧 access 立即失效 → 401 {"error":"token_revoked"}
+#     这是"每次请求查一次 Redis 黑名单"换来的效果；不查黑名单的话这里会是 200，
+#     要等 ACCESS_TTL（15m）自然过期
+GET {{host}}/api/me
+Authorization: Bearer {{login2.response.body.accessToken}}
+
+
+### 11. 登出后旧 rt 也不能再换新 access → 401 {"error":"invalid_refresh_token"}
+POST {{host}}/auth/refresh
+Cookie: {{login2.response.headers.Set-Cookie}}
+
+
+###############################################################################
+# Redis 侧观察（可选，用来确认键设计是否符合预期）
+#
+# 列出本项目的键（Node 版是 rt:，Go 版是 go:auth:rt:，两者互不干扰）：
+#   docker exec backend-redis sh -c 'unset REDISCLI_AUTH; redis-cli -a 123456 --scan --pattern "go:auth:*"'
+#
+# 看某条活跃 refresh 记录（Hash：uid + fid，TTL 应为 REFRESH_TTL 秒）
+#   docker exec backend-redis sh -c 'unset REDISCLI_AUTH; redis-cli -a 123456 HGETALL go:auth:rt:<hash>'
+#   docker exec backend-redis sh -c 'unset REDISCLI_AUTH; redis-cli -a 123456 TTL go:auth:rt:<hash>'
+#
+# 看一条 family 链（Set）：正常情况下只有 1 个成员（当前活跃的那个 hash）
+#   docker exec backend-redis sh -c 'unset REDISCLI_AUTH; redis-cli -a 123456 SMEMBERS go:auth:rt:family:<fid>'
+#
+# 登出后黑名单键的 TTL 应该在 0~900 之间（= access token 的剩余寿命）
+#   docker exec backend-redis sh -c 'unset REDISCLI_AUTH; redis-cli -a 123456 TTL go:auth:bl:<jti>'
+#
+# 清掉本次测试留下的键：
+#   docker exec backend-redis sh -c 'unset REDISCLI_AUTH; redis-cli -a 123456 --scan --pattern "go:auth:*" | xargs -r redis-cli -a 123456 DEL'
+###############################################################################
